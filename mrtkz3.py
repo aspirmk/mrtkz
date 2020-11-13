@@ -616,8 +616,8 @@ class Model:
                 cdata+=[Kt1,Kt2,Kt0,Kt1,Kt2,Kt0]
 
         for km in self.bm:
-            pId1=3*(km.p1.id-1)
-            pId2=3*(km.p2.id-1)
+            pId1=3*(km.p1.id-1)+2
+            pId2=3*(km.p2.id-1)+2
             ri+=[pId1,pId2]
             ci+=[pId2,pId1]
             cdata+=[km.M12,km.M21]
