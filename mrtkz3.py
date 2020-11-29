@@ -1131,22 +1131,20 @@ class Model:
         '''Импорт сечений ветвей из PVL'''
         listp = []
         listm = []
-        Len = PVL_Sech.Len
         PVL_Sech.calc()
+        z1 = PVL_Sech.Len * PVL_Sech.Z1
+        z0 = PVL_Sech.Len * PVL_Sech.Z0
+        b1 = PVL_Sech.Len * PVL_Sech.B1
+        b0 = PVL_Sech.Len * PVL_Sech.B0
         for ij,pk in enumerate(PVL_Sech.bp):
-            q1 = pk.q1
-            q2 = pk.q2
-            z12 = Len * PVL_Sech.Z1[ij,0]
-            z0 = Len * PVL_Sech.Z0[ij,ij]
-            b12 = Len * PVL_Sech.B1[ij,0]
-            b0 = Len * PVL_Sech.B0[ij,ij]
-            p1 = P(self, pk.name, q1, q2, (z12,z12,z0), B=(b12,b12,b0))
+            p1 = P(self, pk.name, pk.q1, pk.q2,
+                   (z1[ij,0],z1[ij,0],z0[ij,ij]),
+                   B=(b1[ij,0],b1[ij,0],b0[ij,ij]) )
             listp.append(p1)
             for ij2,pk2 in enumerate(PVL_Sech.bp[0:ij]):
+                mname = '{} - №{}<=>№{}'.format(PVL_Sech.name,pk.name,pk2.name)
                 p2 = listp[ij2]
-                m12 = Len * PVL_Sech.Z0[ij,ij2]
-                m21 = Len * PVL_Sech.Z0[ij2,ij]
-                m = M(self,'{} - №{}<=>№{}'.format(PVL_Sech.name,pk.name,pk2.name),p1,p2,m12,m21)
+                m = M(self,mname,p1,p2,z0[ij,ij2],z0[ij2,ij])
                 listm.append(m)
         return listp + listm
 
