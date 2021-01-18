@@ -1,12 +1,21 @@
 # -*- coding: utf-8 -*-
-'''
-МОДУЛЬ РАСЧЕТА ТОКОВ КОРОТКОГО ЗАМЫКАНИЯ (М Р Т К З)
+'''МОДУЛЬ РАСЧЕТА ТОКОВ КОРОТКОГО ЗАМЫКАНИЯ (М Р Т К З)
 
-Версия 3.12
+Версия 3.13
 
-г.Саратов 03.12.2020
+г.Саратов 18.01.2021
 
 История изменений
+
+18.01.2021
+- Реализована поддержка проводимостей Y (См) подключенных к узлу, например компенсирующих
+  реакторов (ранее, да и сейчас их можно также представить ветвями на землю);
+- Реализована поддержка источников тока J(А), что необходимо для учета в схеме
+  замещения сети ветровых и солнечных электростанция и других ЭС со звеном
+  постоянного тока с последующим инвертированием к промышленной частоте 50 Гц.
+  Q(model,name,Y=(Y1,Y2,Y0))
+  Q(model,name,J=(J1,J2,J0))
+  Q(model,name,Y=(Y1,Y2,Y0),J=(J1,J2,J0))
 
 03.12.2020
 - Оптимизирован метод mdl.Calc, в части понижения потребляемой памяти и повышения
@@ -65,9 +74,12 @@
         Nname - общее имя сечения ветвей, к уникальному имени ветви будет добавляться
         номер из сечения от 1 до N, где N - количество создаваемых ветвей
         Z12 - вектор numpy.ndarray значений сопротивлений ветвей прямой/обратной последовательности
-        Z0 - квадратная матрица numpy.ndarray значений сопротивлений ветвей и взаимоиндукций нулевой последовательности
-        B12 - вектор numpy.ndarray значений поперечной емкостной проводимости прямой/обратной последовательности
-        B0 - квадратная матрица numpy.ndarray значений поперечной емкостной проводимости нулевой последовательности
+        Z0 - квадратная матрица numpy.ndarray значений сопротивлений ветвей и
+            взаимоиндукций нулевой последовательности
+        B12 - вектор numpy.ndarray значений поперечной емкостной проводимости
+            прямой/обратной последовательности
+        B0 - квадратная матрица numpy.ndarray значений поперечной емкостной
+            проводимости нулевой последовательности
 '''
 
 import numpy as np
@@ -82,11 +94,14 @@ a0 = 1.0+0.0j
 vA = np.array([a0,a0,a0])
 vB = np.array([a2,a ,a0])
 vC = np.array([a, a2,a0])
+vAB = vA - vB
+vBC = vB - vC
+vCA = vC - vA
 vABC = np.concatenate((vA,vB,vC))
 vBCA = np.concatenate((vB,vC,vA))
 vCAB = np.concatenate((vC,vA,vB))
 Ms2f = np.array([vA,vB,vC])
-Ms2ff = np.array([vA-vB,vB-vC,vC-vA])
+Ms2ff = np.array([vAB,vBC,vCA])
 arr012 = np.array([0,1,2])
 arr000 = np.array([0,0,0])
 arr111 = arr000+1
@@ -95,8 +110,7 @@ arr_111 = -arr111
 
 
 class Q:
-    '''
-    Класс трехфазного электрического узла, необходим для формирования расчетной
+    '''Класс трехфазного электрического узла, необходим для формирования расчетной
     модели и получения результатов расчета
 
     Создание узла с помощью конструктора
@@ -136,19 +150,23 @@ class Q:
         компексного числа для его последующего использования в расчетах
         q.ParName
         где ParName может принимать значения:
-        U1,U2,U0,UA,UB,UC,UABC,UAB,UBC,UCA,UAB_BC_CA
-    '''
-    def __init__(self,model,name,desc=''):
+        U1,U2,U0,UA,UB,UC,UABC,UAB,UBC,UCA,UAB_BC_CA'''
+    def __init__(self,model,name,Y=(0,0,0),J=(0,0,0),desc=''):
         ''' Конструктор объекта узла
         Q(model,name,desc='')
         Q(model,name)
+        Q(model,name,Y=(Y1,Y2,Y0))
+        Q(model,name,J=(J1,J2,J0))
+        Q(model,name,Y=(Y1,Y2,Y0),J=(J1,J2,J0))
         где:
            model - объект расчетной модели в которой создается узел
            name - краткое название узла, обращение к узлу по его имени не предусмотрено
+           Y = (Y1,Y2,Y0) - проводимость в узле на землю, См
+           J = (J1,J2,J0) - источник тока подключенный к узлу, А
+               (положительное направление источника тока - "в узел")
            desc - Примечание или любая другая текстовая информация, можно не задавать.
         Результатом конструктора узла является объект узла, который используется для
-        формирования расчетной модели и вывода результатов расчетов
-        '''
+        формирования расчетной модели и вывода результатов расчетов'''
         if not isinstance(model, Model):
             raise TypeError('Ошибка при добавлении узла -', name, '\n',
                             'Аргумент model должен иметь тип Model!')
@@ -157,6 +175,8 @@ class Q:
         self.id = model.nq
         self.model = model
         self.name = name
+        self.Y = Y
+        self.J = J
         self.desc = desc
         self.plist = []
         self.kn = None
@@ -218,37 +238,34 @@ class Q:
             print(StrU(u120))
         else:
             res = mselectz[parname](u120,np.zeros(3))
-            if isinstance(res, (tuple, list)):
-                return mform3[subpar](res,parname)
+            if isinstance(res, np.ndarray):
+                res = mform3[subpar](res,parname)
             else:
-                return mform1[subpar](res,parname)
+                res = mform1[subpar](res,parname)
+            return res
 
     def __getattr__(self, attrname):
-        '''
-        Еще один способ получения конкректного параметра результата в виде
+        '''Еще один способ получения конкректного параметра результата в виде
         компексного числа для его последующего использования в расчетах
         q.ParName
         где ParName может принимать значения:
-        U1,U2,U0,UA,UB,UC,UABC,UAB,UBC,UCA,UAB_BC_CA
-        '''
+        U1,U2,U0,UA,UB,UC,UABC,UAB,UBC,UCA,UAB_BC_CA'''
         u120 = self.getres()
         return mselectz[attrname](u120,np.zeros(3))
 
     def __repr__(self):
-        '''
-        Еще один способ вывода сводной таблицы результатов расчетов для узла q
+        '''Еще один способ вывода сводной таблицы результатов расчетов для узла q
         В командной строке интерпретара набрать название переменной объекта узла и нажать Enter
         q Enter'''
         u120 = self.getres()
-        strres  = "Узел № {} - {}\n".format(self.id, self.name)
-        strres  += StrU(u120)
-        return (strres)
-
+        strres = []
+        strres.append("Узел № {} - {}\n".format(self.id, self.name))
+        strres.append(StrU(u120))
+        return ''.join(strres)
 
 
 class P:
-    '''
-    Класс трехфазной ветви, необходим для формирования расчетной модели
+    '''Класс трехфазной ветви, необходим для формирования расчетной модели
     и получения результатов расчета
 
     Создание ветви с помощью конструктора
@@ -409,14 +426,12 @@ class P:
         self.kn = None
 
     def edit(self,name,q1,q2,Z,E=(0, 0, 0),T=(1, 0),B=(0, 0, 0),desc=''):
-        '''
-        Изменить параметры ветви можно с помощью метода
+        '''Изменить параметры ветви можно с помощью метода
         p.edit(name,q1,q2,Z)
         p.edit(name,q1,q2,Z,desc='Примечание')
         p.edit(name,q1,q2,Z,E=(E1,E2,E0))
         p.edit(name,q1,q2,Z,B=(B1,B2,B0))
-        p.edit(name,q1,q2,Z,T=(Ktrans,GrT))
-        '''
+        p.edit(name,q1,q2,Z,T=(Ktrans,GrT))'''
         if isinstance(q1, int):
             if q1 != 0:
                 raise ValueError('Ошибка при редактировании ветви №', self.id, ' - ', self.name, '\n',
@@ -472,13 +487,16 @@ class P:
         электрических параметров Z,E,B и T
         p.par()'''
         if isinstance(self.q1, Q):
-            q1id = self.q1.id; q1name = self.q1.name
+            q1id = self.q1.id
+            q1name = self.q1.name
         else:
             q1id = 0; q1name = 'Земля'
         if isinstance(self.q2, Q):
-            q2id = self.q2.id; q2name = self.q2.name
+            q2id = self.q2.id
+            q2name = self.q2.name
         else:
-            q2id = 0; q2name = 'Земля'
+            q2id = 0
+            q2name = 'Земля'
         print('Ветвь № {} - {} : {}({}) <=> {}({})'.format(self.id,self.name,q1id,q1name,q2id,q2name))
         print('Z = {}; E = {}; T = {}; B = {}'.format(self.Z,self.E,self.T,self.B))
 
@@ -560,10 +578,11 @@ class P:
             print(StrU(u120))
         else:
             res = mselectz[parname](u120,i120)
-            if isinstance(res, (tuple, list)):
-                return mform3[subpar](res,parname)
+            if isinstance(res, np.ndarray):
+                res = mform3[subpar](res,parname)
             else:
-                return mform1[subpar](res,parname)
+                res = mform1[subpar](res,parname)
+            return res
 
     def res2(self,parname='',subpar=''):
         '''Вывод сводной таблицы результатов расчетов для ветви p
@@ -605,17 +624,16 @@ class P:
             print(StrU(u120))
         else:
             res = mselectz[parname](u120,i120)
-            if isinstance(res, (tuple, list)):
-                return mform3[subpar](res,parname)
+            if isinstance(res, np.ndarray):
+                res = mform3[subpar](res,parname)
             else:
-                return mform1[subpar](res,parname)
+                res = mform1[subpar](res,parname)
+            return res
 
     def __repr__(self):
-        '''
-        Еще один способ вывода сводной таблицы результатов расчетов для ветви p
+        '''Еще один способ вывода сводной таблицы результатов расчетов для ветви p
         В командной строке интерпретара набрать название переменной объекта ветви и нажать Enter
-        p Enter, выводятся результаты с обоих концов ветви
-        '''
+        p Enter, выводятся результаты с обоих концов ветви'''
         i120p = self.getres()
         if isinstance(self.q1, Q):
             q1id = self.q1.id
@@ -624,11 +642,12 @@ class P:
             q1id = 0
             q1name = 'Земля'
         u120,i120 = self.getresq1(i120p)
-        strres = ("Ветвь № {} - {}\n".format(self.id, self.name))
-        strres += ("Значения токов по ветви со стороны узла №{} - {}\n".format(q1id, q1name))
-        strres += StrI(i120)
-        strres += ("Значения напряжения в узле №{} - {}\n".format(q1id, q1name))
-        strres += StrU(u120)
+        strres = []
+        strres.append("Ветвь № {} - {}\n".format(self.id, self.name))
+        strres.append("Значения токов по ветви со стороны узла №{} - {}\n".format(q1id, q1name))
+        strres.append(StrI(i120))
+        strres.append("Значения напряжения в узле №{} - {}\n".format(q1id, q1name))
+        strres.append(StrU(u120))
         if isinstance(self.q2, Q):
             q2id = self.q2.id
             q2name = self.q2.name
@@ -636,15 +655,14 @@ class P:
             q2id = 0
             q2name = 'Земля'
         u120,i120 = self.getresq2(i120p)
-        strres += ("Значения токов по ветви со стороны узла №{} - {}\n".format(q2id, q2name))
-        strres += StrI(i120)
-        strres += ("Значения напряжения в узле №{} - {}\n".format(q2id, q2name))
-        strres += StrU(u120)
-        return (strres)
+        strres.append("Значения токов по ветви со стороны узла №{} - {}\n".format(q2id, q2name))
+        strres.append(StrI(i120))
+        strres.append("Значения напряжения в узле №{} - {}\n".format(q2id, q2name))
+        strres.append(StrU(u120))
+        return (''.join(strres))
 
     def __getattr__(self, attrname):
-        '''
-        Еще один способ получения конкректного параметра результата в виде
+        '''Еще один способ получения конкректного параметра результата в виде
         компексного числа для его последующего использования в расчетах
         p.ParName
         где ParName может принимать значения:
@@ -659,8 +677,7 @@ class P:
         q2U1,q2U2,q2U0,q1U120,q2UA,q2UB,q2UC,q2UABC,q2UAB,q2UBC,q2UCA,q2UAB_BC_CA,
         q2I1,q2I2,q2I0,q1I120,q2IA,q2IB,q2IC,q2IABC,q2IAB,q2IBC,q2ICA,q2IAB_BC_CA,
         q2Z1,q2Z2,q2Z0,q1Z120,q2ZA,q2ZB,q2ZC,q2ZABC,q2ZAB,q2ZBC,q2ZCA,q2ZAB_BC_CA,
-        q2S1,q2S2,q2S0,q1S120,q2SA,q2SB,q2SC,q2SABC,q2SAB,q2SBC,q2SCA,q2SAB_BC_CA,q2S
-        '''
+        q2S1,q2S2,q2S0,q1S120,q2SA,q2SB,q2SC,q2SABC,q2SAB,q2SBC,q2SCA,q2SAB_BC_CA,q2S'''
         i120p = self.getres()
         if not attrname[:2] in ('q1', 'q2'):
             res = mselectz[attrname](np.zeros(3),i120p)
@@ -673,8 +690,7 @@ class P:
         return res
 
 class M:
-    '''
-    Класс взаимоиндукции нулевой последовательности,
+    '''Класс взаимоиндукции нулевой последовательности,
     необходим для формирования расчетной модели
 
     Создание ветви с помощью конструктора
@@ -697,8 +713,7 @@ class M:
     Пользовательские функции для объекта взаимоиндукции m
     Вывод на экран параметров ветви - ее номера, названия, номеров и наименований ветвей
     между которыми создана взаимоиндукция, электрических параметров M12,M21
-    m.par()
-    '''
+    m.par()'''
     def __init__(self,model,name,p1,p2,M12,M21,desc=''):
         ''' Конструктор взаимоиндукции
         Создание ветви с помощью конструктора
@@ -753,14 +768,12 @@ class M:
     def par(self):
         '''Вывод на экран параметров ветви - ее номера, названия, номеров и наименований ветвей
         между которыми создана взаимоиндукция, электрических параметров M12,M21
-        m.par()
-        '''
+        m.par()'''
         print('Взаимоиндукция № {} - {} : {}({}) <=> {}({})'.format(self.id,self.name,self.p1.id,self.p1.name,self.p2.id,self.p2.name))
         print('M12 = {}; M21 = {}'.format(self.M12,self.M21))
 
 class N:
-    '''
-    Класс продольной (обрыв) или поперечной (КЗ) несимметрии,
+    '''Класс продольной (обрыв) или поперечной (КЗ) несимметрии,
     необходим для формирования расчетной модели и получения результатов расчета
 
     Создание несимметрии с помощью конструктора
@@ -827,8 +840,7 @@ class N:
     U1,U2,U0,UA,UB,UC,UABC,UAB,UBC,UCA,UAB_BC_CA
     I1,I2,I0,IA,IB,IC,IABC,IAB,IBC,ICA,IAB_BC_CA
     Z1,Z2,Z0,Z120,ZA,ZB,ZC,ZABC,ZAB,ZBC,ZCA,ZAB_BC_CA,
-    S1,S2,S0,S120,SA,SB,SC,SABC,SAB,SBC,SCA,SAB_BC_CA,S
-    '''
+    S1,S2,S0,S120,SA,SB,SC,SABC,SAB,SBC,SCA,SAB_BC_CA,S'''
     def __init__(self,model,name,qp,SC,r=0,desc=''):
         ''' Конструктор повреждения (КЗ или обрыва)'''
         if not isinstance(model, Model):
@@ -852,8 +864,7 @@ class N:
         self.r = r
 
     def edit(self, name,SC,r=0,desc=''):
-        '''
-        Изменить параметры несимметрии n можно с помощью метода
+        '''Изменить параметры несимметрии n можно с помощью метода
         n.edit(name,SC)
         n.edit(name,SC,desc='')
         n.edit(name,SC,r=0)'''
@@ -863,12 +874,10 @@ class N:
         self.r = r
 
     def par(self):
-        '''
-        Вывод на экран параметров несимметрии - ее номера, названия,
+        '''Вывод на экран параметров несимметрии - ее номера, названия,
         номера и наименования узла или ветви к которым она подключена,
         вида несимметрии
-        n.par()
-        '''
+        n.par()'''
         if isinstance(self.qp, Q):
             print('КЗ № {} - {} : {} (r={}) в узле № {}({})'.format(self.id,self.name,self.SC,self.r,self.qp.id,self.qp.name))
         elif isinstance(self.qp, P):
@@ -877,8 +886,7 @@ class N:
     def getres(self):
         '''Служебный метод, возвращает результат расчета по данной несимметрии
         для КЗ - токи КЗ прямой, обратной и нулевой последовательностей;
-        для обрывов - напряжения продольной несимметрии прямой, обратной и нулевой последовательностей.
-        '''
+        для обрывов - напряжения продольной несимметрии прямой, обратной и нулевой последовательностей.'''
         if self.model is None:
             raise ValueError('Ошибка при выводе результатов расчетов несимметрии №', self.id, ' - ', self.name, '\n',
                             'Несимметрия не принадлежит какой либо модели!')
@@ -889,8 +897,7 @@ class N:
         return self.model.X[nId:nId+3]
 
     def res(self,parname='',subpar=''):
-        '''
-        Вывод сводной таблицы результатов расчетов для несимметрии n
+        '''Вывод сводной таблицы результатов расчетов для несимметрии n
         n.res()
 
         Вывод конкретного параметра ParName в виде компексного числа
@@ -910,8 +917,7 @@ class N:
         'M' - Модуль комплексного числа
         '<f' - Фаза вектора в градусах
         'R+jX' - Текстовый вид комплексного числа
-        'M<f' - Текстовый вид комплексного числа
-        '''
+        'M<f' - Текстовый вид комплексного числа'''
         if isinstance(self.qp, Q):
             u120 = self.qp.getres()
             i120 = self.getres()
@@ -922,7 +928,7 @@ class N:
                 print('Суммарный ток КЗ в Узле № {} - {}'.format(self.qp.id, self.qp.name))
                 print(StrI(i120))
                 print('Подтекание токов по ветвям')
-
+                self.qp.update()
                 for kp in self.qp.plist:
                     i120 = kp.getres()
                     if self.qp is kp.q1:
@@ -934,26 +940,26 @@ class N:
                     print(StrI(i120, 0))
             else:
                 res = mselectz[parname](u120,i120)
-                if isinstance(res, (tuple, list)):
-                    return mform3[subpar](res,parname)
+                if isinstance(res, np.ndarray):
+                    res = mform3[subpar](res,parname)
                 else:
-                    return mform1[subpar](res,parname)
+                    res = mform1[subpar](res,parname)
+                return res
 
     def __repr__(self):
-        '''
-        Еще один способ вывода сводной таблицы результатов расчетов для несимметрии n
+        '''Еще один способ вывода сводной таблицы результатов расчетов для несимметрии n
         В командной строке интерпретара набрать название переменной объекта несимметрии n и нажать Enter
-        n Enter
-        '''
+        n Enter'''
         if isinstance(self.qp, Q):
             u120 = self.qp.getres()
             i120 = self.getres()
-            strres = ('КЗ №{} - {} - {}\n'.format(self.id, self.name, self.SC))
-            strres += ('В Узле № {} - {}\n'.format(self.qp.id, self.qp.name))
-            strres += StrU(u120)
-            strres += ('\nСуммарный ток КЗ в Узле № {} - {}\n'.format(self.qp.id, self.qp.name))
-            strres += StrI(i120)
-            strres += ('\nПодтекание токов по ветвям')
+            strres = []
+            strres.append('КЗ №{} - {} - {}\n'.format(self.id, self.name, self.SC))
+            strres.append('В Узле № {} - {}\n'.format(self.qp.id, self.qp.name))
+            strres.append(StrU(u120))
+            strres.append('\nСуммарный ток КЗ в Узле № {} - {}\n'.format(self.qp.id, self.qp.name))
+            strres.append(StrI(i120))
+            strres.append('\nПодтекание токов по ветвям')
 
             for kp in self.qp.plist:
                 i120p = kp.getres()
@@ -962,23 +968,22 @@ class N:
                 elif self.qp is kp.q2:
                     _,i120p = kp.getresq2(i120p)
                 i120p = -i120p
-                strres += ('\nВетвь № {} - {}\n'.format(kp.id, kp.name))
-                strres += StrI(i120p,0)
+                strres.append('\nВетвь № {} - {}\n'.format(kp.id, kp.name))
+                strres.append(StrI(i120p,0))
+            strres = ''.join(strres)
         elif isinstance(self.qp, P):
             strres = self.qp.__repr__()
         return (strres)
 
     def __getattr__(self, attrname):
-        '''
-        Еще один способ получения конкректного параметра результата в виде
+        '''Еще один способ получения конкректного параметра результата в виде
         компексного числа для его последующего использования в расчетах
         n.ParName
         где ParName может принимать значения:
         U1,U2,U0,UA,UB,UC,UABC,UAB,UBC,UCA,UAB_BC_CA
         I1,I2,I0,IA,IB,IC,IABC,IAB,IBC,ICA,IAB_BC_CA
         Z1,Z2,Z0,Z120,ZA,ZB,ZC,ZABC,ZAB,ZBC,ZCA,ZAB_BC_CA,
-        S1,S2,S0,S120,SA,SB,SC,SABC,SAB,SBC,SCA,SAB_BC_CA,S
-        '''
+        S1,S2,S0,S120,SA,SB,SC,SABC,SAB,SBC,SCA,SAB_BC_CA,S'''
         if isinstance(self.qp, Q):
             u120 = self.qp.getres()
             i120 = self.getres()
@@ -989,8 +994,7 @@ class N:
         return res
 
 class Model:
-    '''
-    Класс представляющий расчетную модель электрической сети,
+    '''Класс представляющий расчетную модель электрической сети,
     необходим для формирования и хранения расчетной модели, выполнения расчетов
 
     Конструктор расчетной модели сети
@@ -1001,9 +1005,7 @@ class Model:
     Пользовательские функции для модели mdl
     Обнуление количества и очистка списков (таблиц) узлов, ветвей,
     взаимоиндукций, несимметрий...
-    mdl.Clear()
-
-    '''
+    mdl.Clear()'''
     def __init__(self,desc=''):
         ''' Конструктор расчетной модели'''
         self.desc = desc
@@ -1018,19 +1020,16 @@ class Model:
         self.X = None
 
     def AddNQ(self,NQ,Nname):
-        '''
-        Множественное создание узлов
+        '''Множественное создание узлов
         NQ - количество создаваемых узлов
-        Nname - общее наименование узлов
-        '''
+        Nname - общее наименование узлов'''
         listq = []
         for ij in range(NQ):
             listq.append(Q(self,'{} - №{}'.format(Nname,ij+1)))
         return listq
 
     def AddNP(self,Nname,listq1,listq2,Z12,Z0,B12=None,B0=None):
-        '''
-        Множественное создание ветвей и взаимоиндуктивностей
+        '''Множественное создание ветвей и взаимоиндуктивностей
         NQ - количество создаваемых узлов
         Nname - общее наименование сечения ветвей
         listq1 - список объектов узлов к которым буду подключаться ветви
@@ -1040,8 +1039,7 @@ class Model:
         B12 - вектор np.ndarray значений поперечной емкостной проводимости прямой/обратной последовательности
         B0 - квадратная матрица np.ndarray значений поперечной емкостной проводимости нулевой последовательности
         AddNP(Nname,listq1,listq2,Z12,Z0) - при отсутствии поперечной емкостной проводимости
-        AddNP(Nname,listq1,listq2,Z12,Z0,B12,B0) - при наличии поперечной емкостной проводимости
-        '''
+        AddNP(Nname,listq1,listq2,Z12,Z0,B12,B0) - при наличии поперечной емкостной проводимости'''
         listp = []
         listm = []
         nq1 = len(listq1)
@@ -1075,12 +1073,13 @@ class Model:
                 raise ValueError('Ошибка при добавлении сечения ветвей -', Nname, '\n',
                                 'Количество сопротивлений B0 должно соответствовать количеству узлов!')
             for ij in range(nq1):
-                listp.append(P(self,'{} - №{}'.format(Nname,ij+1),listq1[ij],listq2[ij]),(Z12[ij],Z12[ij],Z0[ij,ij]),B=(B12[ij],B12[ij],B0[ij,ij]))
+                #(self,model,name,q1,q2,Z,E=(0, 0, 0),T=(1, 0),B=(0, 0, 0),desc='')
+                listp.append(P(self,'{} - №{}'.format(Nname,ij+1),listq1[ij],listq2[ij]),Z=(Z12[ij],Z12[ij],Z0[ij,ij]),B=(B12[ij],B12[ij],B0[ij,ij]))
                 for ij2 in range(ij):
                     listm.append(M(self,'{} - №{}<=>№{}'.format(Nname,ij+1,ij2+1),listp[ij],listp[ij2],Z0[ij,ij2],Z0[ij2,ij]))
         else:
             for ij in range(nq1):
-                listp.append(P(self,'{} - №{}'.format(Nname,ij+1),listq1[ij],listq2[ij]),(Z12[ij],Z12[ij],Z0[ij,ij]))
+                listp.append(P(self,'{} - №{}'.format(Nname,ij+1),listq1[ij],listq2[ij]),Z=(Z12[ij],Z12[ij],Z0[ij,ij]))
                 for ij2 in range(ij):
                     listm.append(M(self,'{} - №{}<=>№{}'.format(Nname,ij+1,ij2+1),listp[ij],listp[ij2],Z0[ij,ij2],Z0[ij2,ij]))
         return listp + listm
@@ -1110,49 +1109,57 @@ class Model:
         '''Полная очистка расчетной модели
         Обнуление количества и очистка списков (таблиц) узлов, ветвей,
         взаимоиндукций, несимметрий...
-        mdl.Clear()
-        '''
-        self.nq=0
-        self.np=0
-        self.nm=0
-        self.nn=0
+        mdl.Clear()'''
+        self.X = None
+        self.nq = 0
+        self.np = 0
+        self.nm = 0
+        self.nn = 0
         for kq in self.bq:
-            kq.model=None
+            kq.model = None
+            kq.plist = []
+            kq.kn = None
         for kp in self.bp:
-            kp.model=None
+            kp.model = None
+            kp.q1 = None
+            kp.q2 = None
+            kp.mlist = []
+            kp.kn = None
         for km in self.bm:
-            km.model=None
+            km.model = None
+            km.p1 = None
+            km.p2 = None
         for kn in self.bn:
-            kn.model=None
-        self.bq=[]
-        self.bp=[]
-        self.bm=[]
-        self.bn=[]
+            kn.model = None
+            kn.qp = None
+        self.bq = []
+        self.bp = []
+        self.bm = []
+        self.bn = []
 
     def ClearN(self):
         '''Очистка всех несимметрий (КЗ и обрывов) в расчетной модели
         за исключением типа 'N0' - заземлений и обрывов по нулевой последовательности
-        mdl.ClearN()
-        '''
-        self.nn=0
-        oldbn=self.bn
-        self.bn=[]
+        mdl.ClearN()'''
+        self.X = None
+        self.nn = 0
+        oldbn = self.bn
+        self.bn = []
         for kn in oldbn:
             if kn.SC == 'N0':
-                self.nn+=1
+                self.nn += 1
                 self.bn.append(kn)
                 kn.id = self.nn
             else:
-                kn.model=None
-                kn.qp.kn=None
+                kn.model = None
+                kn.qp.kn = None
 
     def List(self):
         '''Вывод на экран составляющих расчетную модель узлов, ветвей,
         взаимоиндукций, несимметрий и их параметров...
         По сути является поочередным применением метода par() ко всем элементам
         расчетной модели
-        mdl.List()
-        '''
+        mdl.List()'''
         print('Количество узлов = {}; ветвей = {}; взаимоиндуктивностей = {}; несимметрий = {}'.format(self.nq,self.np,self.nm,self.nn))
         for kq in self.bq:
             kq.par()
@@ -1183,8 +1190,8 @@ class Model:
             где:
                 Z - квадратная матрица сопротивлений ветвей и взаимных индуктивностей
                 прямой, обратной и нулевой последовательностей, размерность - (3*np,3*np)
-                A - матрица соединений размерность - (3*nq,3*np)
-                At - транспонированная матрица соединений размерность - (3*np,3*nq)
+                A - матрица соединений, размерность - (3*nq,3*np)
+                At - транспонированная матрица соединений, размерность - (3*np,3*nq)
                 (B/2) - квадратная диагональная матрица сумм поперечных проводимостей B/2,
                 подключенных к узлу прямой, обратной и нулевой последовательностей, размерность - (3*nq,3*nq)
                 E - вектор столбец Э.Д.С. ветвей прямой, обратной и нулевой последовательностей, размерность - (3*np,1)
@@ -1240,8 +1247,7 @@ class Model:
         Этап 1. формируется координатная версия резреженной матрицы в cdata, ri и ci,
         в которых хранятся значения ненулевых элеметнов матрицы, их номера строк и столбцов
         Этап 2. формируется CSC (Разреженный столбцовый формат) матрица LHS  с помощью метода scipy
-        Решение разреженной СЛАУ осуществляется с помощью метода spsolve(LHS,RHS) библиотеки scipy
-        '''
+        Решение разреженной СЛАУ осуществляется с помощью метода spsolve(LHS,RHS) библиотеки scipy'''
         n = 3*(self.nq+self.np+self.nn)# Размерность СЛАУ
         maxnnz = 3*self.nq + 15*self.np + 2*self.nm + 15*self.nn# Максимальное кол-во ненулевых элементов разреженной матрицы
         RHS = np.zeros(n, dtype=np.complex)# Вектор правой части уравнения, в него записывается э.д.с. ветвей
@@ -1265,7 +1271,7 @@ class Model:
             RHS[pId:pId+3] = np.array(kp.E)
             #Расчет комплексных коэф-ов трансформации прямой, обратной и нулевой последовательностей
             Kt1 = kp.T[0] * np.exp(Kf*kp.T[1])
-            if (kp.T[1] % 2 == 0):
+            if kp.T[1] % 2 == 0:
                 Kt2 = Kt1
             else:
                 Kt2 = np.conj(Kt1)
@@ -1315,7 +1321,8 @@ class Model:
             Dij = 3
             ri[ij:ij+Dij] = lqId#[qId,qId+1,qId+2]
             ci[ij:ij+Dij] = lqId#[qId,qId+1,qId+2]
-            cdata[ij:ij+Dij] = -qB[qbId:qbId+3]
+            cdata[ij:ij+Dij] = -(qB[qbId:qbId+3] + np.array(kq.Y))
+            RHS[qId:qId+3] = -np.array(kq.J)
             ij += Dij
 
         for kn in self.bn:
@@ -1463,12 +1470,12 @@ mselectz=dict({'U120' : lambda uq,ip: uq,
               'U2' : lambda uq,ip: uq[1],
               'U0' : lambda uq,ip: uq[2],
               '3U0' : lambda uq,ip: 3*uq[2],
-              'UA' : lambda uq,ip: Ms2f[0,:] @ uq,
-              'UB' : lambda uq,ip: Ms2f[1,:] @ uq,
-              'UC' : lambda uq,ip: Ms2f[2,:] @ uq,
-              'UAB' : lambda uq,ip: Ms2ff[0,:] @ uq,
-              'UBC' : lambda uq,ip: Ms2ff[1,:] @ uq,
-              'UCA' : lambda uq,ip: Ms2ff[2,:] @ uq,
+              'UA' : lambda uq,ip: vA @ uq,
+              'UB' : lambda uq,ip: vB @ uq,
+              'UC' : lambda uq,ip: vC @ uq,
+              'UAB' : lambda uq,ip: vAB @ uq,
+              'UBC' : lambda uq,ip: vBC @ uq,
+              'UCA' : lambda uq,ip: vCA @ uq,
               'UABC' : lambda uq,ip: Ms2f @ uq,
               'UAB_BC_CA' : lambda uq,ip: Ms2ff @ uq,
               'I120' : lambda uq,ip: ip,
@@ -1476,36 +1483,36 @@ mselectz=dict({'U120' : lambda uq,ip: uq,
               'I2' : lambda uq,ip: ip[1],
               'I0' : lambda uq,ip: ip[2],
               '3I0' : lambda uq,ip: 3*ip[2],
-              'IA' : lambda uq,ip: Ms2f[0,:] @ ip,
-              'IB' : lambda uq,ip: Ms2f[1,:] @ ip,
-              'IC' : lambda uq,ip: Ms2f[2,:] @ ip,
-              'IAB' : lambda uq,ip: Ms2ff[0,:] @ ip,
-              'IBC' : lambda uq,ip: Ms2ff[1,:] @ ip,
-              'ICA' : lambda uq,ip: Ms2ff[2,:] @ ip,
+              'IA' : lambda uq,ip: vA @ ip,
+              'IB' : lambda uq,ip: vB @ ip,
+              'IC' : lambda uq,ip: vC @ ip,
+              'IAB' : lambda uq,ip: vAB @ ip,
+              'IBC' : lambda uq,ip: vBC @ ip,
+              'ICA' : lambda uq,ip: vCA @ ip,
               'IABC' : lambda uq,ip: Ms2f @ ip,
               'IAB_BC_CA' : lambda uq,ip: Ms2ff @ ip,
               'Z120' : lambda uq,ip: uq / ip,
               'Z1' : lambda uq,ip: uq[0] / ip[0],
               'Z2' : lambda uq,ip: uq[1] / ip[1],
               'Z0' : lambda uq,ip: uq[2] / ip[2],
-              'ZA' : lambda uq,ip: (Ms2f[0,:] @ uq) / (Ms2f[0,:] @ ip),
-              'ZB' : lambda uq,ip: (Ms2f[1,:] @ uq) / (Ms2f[1,:] @ ip),
-              'ZC' : lambda uq,ip: (Ms2f[2,:] @ uq) / (Ms2f[2,:] @ ip),
-              'ZAB' : lambda uq,ip: (Ms2ff[0,:] @ uq) / (Ms2ff[0,:] @ ip),
-              'ZBC' : lambda uq,ip: (Ms2ff[1,:] @ uq) / (Ms2ff[1,:] @ ip),
-              'ZCA' : lambda uq,ip: (Ms2ff[2,:] @ uq) / (Ms2ff[2,:] @ ip),
+              'ZA' : lambda uq,ip: (vA @ uq) / (vA @ ip),
+              'ZB' : lambda uq,ip: (vB @ uq) / (vB @ ip),
+              'ZC' : lambda uq,ip: (vC @ uq) / (vC @ ip),
+              'ZAB' : lambda uq,ip: (vAB @ uq) / (vAB @ ip),
+              'ZBC' : lambda uq,ip: (vBC @ uq) / (vBC @ ip),
+              'ZCA' : lambda uq,ip: (vCA @ uq) / (vCA @ ip),
               'ZABC' : lambda uq,ip: (Ms2f @ uq) / (Ms2f @ ip),
               'ZAB_BC_CA' : lambda uq,ip: (Ms2ff @ uq) / (Ms2ff @ ip),
               'S120' : lambda uq,ip: uq * np.conj(ip),
               'S1' : lambda uq,ip: uq[0] * np.conj(ip[0]),
               'S2' : lambda uq,ip: uq[1] * np.conj(ip[1]),
               'S0' : lambda uq,ip: uq[2] * np.conj(ip[2]),
-              'SA' : lambda uq,ip: (Ms2f[0,:] @ uq) * np.conj(Ms2f[0,:] @ ip),
-              'SB' : lambda uq,ip: (Ms2f[1,:] @ uq) * np.conj(Ms2f[1,:] @ ip),
-              'SC' : lambda uq,ip: (Ms2f[2,:] @ uq) * np.conj(Ms2f[2,:] @ ip),
-              'SAB' : lambda uq,ip: (Ms2ff[0,:] @ uq) * np.conj(Ms2ff[0,:] @ ip),
-              'SBC' : lambda uq,ip: (Ms2ff[1,:] @ uq) * np.conj(Ms2ff[1,:] @ ip),
-              'SCA' : lambda uq,ip: (Ms2ff[2,:] @ uq) * np.conj(Ms2ff[2,:] @ ip),
+              'SA' : lambda uq,ip: (vA @ uq) * np.conj(vA @ ip),
+              'SB' : lambda uq,ip: (vB @ uq) * np.conj(vB @ ip),
+              'SC' : lambda uq,ip: (vC @ uq) * np.conj(vC @ ip),
+              'SAB' : lambda uq,ip: (vAB @ uq) * np.conj(vAB @ ip),
+              'SBC' : lambda uq,ip: (vBC @ uq) * np.conj(vBC @ ip),
+              'SCA' : lambda uq,ip: (vCA @ uq) * np.conj(vCA @ ip),
               'SABC' : lambda uq,ip: (Ms2f @ uq) * np.conj(Ms2f @ ip),
               'S' : lambda uq,ip: np.sum((Ms2f @ uq) * np.conj(Ms2f @ ip)),
               'SAB_BC_CA' : lambda uq,ip: (Ms2ff @ uq) * np.conj(Ms2ff @ ip)
@@ -1531,28 +1538,40 @@ mform3=dict({'' : lambda res,parname: res,
 
 
 def StrU(u120):
-    strUABC = "UA  = {0:>7.0f} < {1:>6.1f} | UB  = {2:>7.0f} < {3:>6.1f} | UC  = {4:>7.0f} < {5:>6.1f}\n"
-    strU120 = "U1  = {0:>7.0f} < {1:>6.1f} | U2  = {2:>7.0f} < {3:>6.1f} | 3U0 = {4:>7.0f} < {5:>6.1f}\n"
-    strUAB_BC_CA = "UAB = {0:>7.0f} < {1:>6.1f} | UBC = {2:>7.0f} < {3:>6.1f} | UCA = {4:>7.0f} < {5:>6.1f}"
-    resstr = []
+    str0 =    "____________________________________________________________________________\n"
+    str1 =    "|                        |                        |                        |\n"
+    str2 =    "|________________________|________________________|________________________|"
+    strUABC = "| UA  = {0:>7.0f} < {1:>6.1f} | UB  = {2:>7.0f} < {3:>6.1f} | UC  = {4:>7.0f} < {5:>6.1f} |\n"
+    strU120 = "| U1  = {0:>7.0f} < {1:>6.1f} | U2  = {2:>7.0f} < {3:>6.1f} | 3U0 = {4:>7.0f} < {5:>6.1f} |\n"
+    strUAB_BC_CA = "| UAB = {0:>7.0f} < {1:>6.1f} | UBC = {2:>7.0f} < {3:>6.1f} | UCA = {4:>7.0f} < {5:>6.1f} |\n"
     u1,u2,u0 = u120
     uA,uB,uC = Ms2f @ u120
     uAB,uBC,uCA = Ms2ff @ u120
+    resstr = []
+    resstr.append(str0)
+    resstr.append(str1)
     resstr.append(strUABC.format(np.abs(uA),r2d*np.angle(uA),np.abs(uB),r2d*np.angle(uB),np.abs(uC),r2d*np.angle(uC)))
     resstr.append(strU120.format(np.abs(u1),r2d*np.angle(u1),np.abs(u2),r2d*np.angle(u2),np.abs(3*u0),r2d*np.angle(u0)))
     resstr.append(strUAB_BC_CA.format(np.abs(uAB),r2d*np.angle(uAB),np.abs(uBC),r2d*np.angle(uBC),np.abs(uCA),r2d*np.angle(uCA)))
-    return(''.join(resstr))
+    resstr.append(str2)
+    return ''.join(resstr)
 
 def StrI(i120, Iff=1):
-    strIABC = "IA  = {0:>7.0f} < {1:>6.1f} | IB  = {2:>7.0f} < {3:>6.1f} | IC  = {4:>7.0f} < {5:>6.1f}\n"
-    strI120 = "I1  = {0:>7.0f} < {1:>6.1f} | I2  = {2:>7.0f} < {3:>6.1f} | 3I0 = {4:>7.0f} < {5:>6.1f}"
-    resstr = []
+    str0 =    "____________________________________________________________________________\n"
+    str1 =    "|                        |                        |                        |\n"
+    str2 =    "|________________________|________________________|________________________|"
+    strIABC = "| IA  = {0:>7.0f} < {1:>6.1f} | IB  = {2:>7.0f} < {3:>6.1f} | IC  = {4:>7.0f} < {5:>6.1f} |\n"
+    strI120 = "| I1  = {0:>7.0f} < {1:>6.1f} | I2  = {2:>7.0f} < {3:>6.1f} | 3I0 = {4:>7.0f} < {5:>6.1f} |\n"
     i1,i2,i0 = i120
     iA,iB,iC = Ms2f @ i120
+    resstr = []
+    resstr.append(str0)
+    resstr.append(str1)
     resstr.append(strIABC.format(np.abs(iA),r2d*np.angle(iA),np.abs(iB),r2d*np.angle(iB),np.abs(iC),r2d*np.angle(iC)))
     resstr.append(strI120.format(np.abs(i1),r2d*np.angle(i1),np.abs(i2),r2d*np.angle(i2),np.abs(3*i0),r2d*np.angle(i0)))
     if Iff:
-        strIAB_BC_CA = "\nIAB = {0:>7.0f} < {1:>6.1f} | IBC = {2:>7.0f} < {3:>6.1f} | ICA = {4:>7.0f} < {5:>6.1f}"
+        strIAB_BC_CA = "| IAB = {0:>7.0f} < {1:>6.1f} | IBC = {2:>7.0f} < {3:>6.1f} | ICA = {4:>7.0f} < {5:>6.1f} |\n"
         iAB,iBC,iCA = Ms2ff @ i120
         resstr.append(strIAB_BC_CA.format(np.abs(iAB),r2d*np.angle(iAB),np.abs(iBC),r2d*np.angle(iBC),np.abs(iCA),r2d*np.angle(iCA)))
-    return(''.join(resstr))
+    resstr.append(str2)
+    return ''.join(resstr)
