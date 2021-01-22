@@ -3,9 +3,14 @@
 
 Версия 3.13
 
-г.Саратов 18.01.2021
+г.Саратов 22.01.2021
 
 История изменений
+
+22.01.2021
+- С учетом реализации возможности ввода проводимости в узле скорректирован вывод
+  результатов расчетов расчета по узлу
+- В таблицах вывода результатов заменен знак < на знак ∠
 
 18.01.2021
 - Реализована поддержка проводимостей Y (См) подключенных к узлу, например компенсирующих
@@ -233,11 +238,15 @@ class Q:
         'R+jX' - Текстовый вид комплексного числа
         'M<f' - Текстовый вид комплексного числа'''
         u120 = self.getres()
+        i120 = np.array(self.Y) * u120
         if parname=='':
             print('Узел № {} - {}'.format(self.id, self.name))
             print(StrU(u120))
+            if i120 != np.zeros(3):
+                print("Значения токов проводимости узла")
+                print(StrI(i120))
         else:
-            res = mselectz[parname](u120,np.zeros(3))
+            res = mselectz[parname](u120,i120)
             if isinstance(res, np.ndarray):
                 res = mform3[subpar](res,parname)
             else:
@@ -251,16 +260,21 @@ class Q:
         где ParName может принимать значения:
         U1,U2,U0,UA,UB,UC,UABC,UAB,UBC,UCA,UAB_BC_CA'''
         u120 = self.getres()
-        return mselectz[attrname](u120,np.zeros(3))
+        i120 = np.array(self.Y) * u120
+        return mselectz[attrname](u120,i120)
 
     def __repr__(self):
         '''Еще один способ вывода сводной таблицы результатов расчетов для узла q
         В командной строке интерпретара набрать название переменной объекта узла и нажать Enter
         q Enter'''
         u120 = self.getres()
+        i120 = np.array(self.Y) * u120
         strres = []
         strres.append("Узел № {} - {}\n".format(self.id, self.name))
         strres.append(StrU(u120))
+        if i120 != np.zeros(3):
+            strres.append("Значения токов проводимости узла")
+            strres.append(StrI(i120))
         return ''.join(strres)
 
 
@@ -1524,7 +1538,7 @@ mform1=dict({'' : lambda res,parname: res,
               'M' : lambda res,parname: np.abs(res),
               '<f' : lambda res,parname:  r2d*np.angle(res),
               'R+jX' : lambda res,parname: "{0:<4} = {1:>8.1f} + {2:>8.1f}j".format(parname, np.real(res),np.imag(res)),
-              'M<f' : lambda res,parname: "{0:<4} = {1:>8.1f} < {2:>6.1f}".format(parname, np.abs(res),r2d*np.angle(res))
+              'M<f' : lambda res,parname: "{0:<4} = {1:>8.1f} ∠ {2:>6.1f}".format(parname, np.abs(res),r2d*np.angle(res))
               })
 
 mform3=dict({'' : lambda res,parname: res,
@@ -1533,17 +1547,17 @@ mform3=dict({'' : lambda res,parname: res,
               'M' : lambda res,parname: np.abs(res),
               '<f' : lambda res,parname:  r2d*np.angle(res),
               'R+jX' : lambda res,parname: "{0:<4} = [{1:>8.1f} + {2:>8.1f}j, {3:>8.1f} + {4:>8.1f}j, {5:>8.1f} + {6:>8.1f}j]".format(parname, np.real(res[0]), np.imag(res[0]), np.real(res[1]), np.imag(res[1]), np.real(res[2]), np.imag(res[2])),
-              'M<f' : lambda res,parname: "{0:<4} = [{1:>8.1f} < {2:>6.1f}, {3:>8.1f} < {4:>6.1f}, {5:>8.1f} < {6:>6.1f}]".format(parname, np.abs(res[0]), r2d*np.angle(res[0]), np.abs(res[1]), r2d*np.angle(res[1]), np.abs(res[2]), r2d*np.angle(res[2]))
+              'M<f' : lambda res,parname: "{0:<4} = [{1:>8.1f} ∠ {2:>6.1f}, {3:>8.1f} ∠ {4:>6.1f}, {5:>8.1f} ∠ {6:>6.1f}]".format(parname, np.abs(res[0]), r2d*np.angle(res[0]), np.abs(res[1]), r2d*np.angle(res[1]), np.abs(res[2]), r2d*np.angle(res[2]))
               })
 
 
 def StrU(u120):
-    str0 =    "____________________________________________________________________________\n"
-    str1 =    "|                        |                        |                        |\n"
-    str2 =    "|________________________|________________________|________________________|"
-    strUABC = "| UA  = {0:>7.0f} < {1:>6.1f} | UB  = {2:>7.0f} < {3:>6.1f} | UC  = {4:>7.0f} < {5:>6.1f} |\n"
-    strU120 = "| U1  = {0:>7.0f} < {1:>6.1f} | U2  = {2:>7.0f} < {3:>6.1f} | 3U0 = {4:>7.0f} < {5:>6.1f} |\n"
-    strUAB_BC_CA = "| UAB = {0:>7.0f} < {1:>6.1f} | UBC = {2:>7.0f} < {3:>6.1f} | UCA = {4:>7.0f} < {5:>6.1f} |\n"
+    str0 =    "_______________________________________________________________________________\n"
+    str1 =    "|                         |                         |                         |\n"
+    str2 =    "|_________________________|_________________________|_________________________|"
+    strUABC = "| UA  = {0:>7.0f} ∠ {1:>6.1f} | UB  = {2:>7.0f} ∠ {3:>6.1f} | UC  = {4:>7.0f} ∠ {5:>6.1f} |\n"
+    strU120 = "| U1  = {0:>7.0f} ∠ {1:>6.1f} | U2  = {2:>7.0f} ∠ {3:>6.1f} | 3U0 = {4:>7.0f} ∠ {5:>6.1f} |\n"
+    strUAB_BC_CA = "| UAB = {0:>7.0f} ∠ {1:>6.1f} | UBC = {2:>7.0f} ∠ {3:>6.1f} | UCA = {4:>7.0f} ∠ {5:>6.1f} |\n"
     u1,u2,u0 = u120
     uA,uB,uC = Ms2f @ u120
     uAB,uBC,uCA = Ms2ff @ u120
@@ -1557,11 +1571,11 @@ def StrU(u120):
     return ''.join(resstr)
 
 def StrI(i120, Iff=1):
-    str0 =    "____________________________________________________________________________\n"
-    str1 =    "|                        |                        |                        |\n"
-    str2 =    "|________________________|________________________|________________________|"
-    strIABC = "| IA  = {0:>7.0f} < {1:>6.1f} | IB  = {2:>7.0f} < {3:>6.1f} | IC  = {4:>7.0f} < {5:>6.1f} |\n"
-    strI120 = "| I1  = {0:>7.0f} < {1:>6.1f} | I2  = {2:>7.0f} < {3:>6.1f} | 3I0 = {4:>7.0f} < {5:>6.1f} |\n"
+    str0 =    "_______________________________________________________________________________\n"
+    str1 =    "|                         |                         |                         |\n"
+    str2 =    "|_________________________|_________________________|_________________________|"
+    strIABC = "| IA  = {0:>7.0f} ∠ {1:>6.1f} | IB  = {2:>7.0f} ∠ {3:>6.1f} | IC  = {4:>7.0f} ∠ {5:>6.1f} |\n"
+    strI120 = "| I1  = {0:>7.0f} ∠ {1:>6.1f} | I2  = {2:>7.0f} ∠ {3:>6.1f} | 3I0 = {4:>7.0f} ∠ {5:>6.1f} |\n"
     i1,i2,i0 = i120
     iA,iB,iC = Ms2f @ i120
     resstr = []
@@ -1570,7 +1584,7 @@ def StrI(i120, Iff=1):
     resstr.append(strIABC.format(np.abs(iA),r2d*np.angle(iA),np.abs(iB),r2d*np.angle(iB),np.abs(iC),r2d*np.angle(iC)))
     resstr.append(strI120.format(np.abs(i1),r2d*np.angle(i1),np.abs(i2),r2d*np.angle(i2),np.abs(3*i0),r2d*np.angle(i0)))
     if Iff:
-        strIAB_BC_CA = "| IAB = {0:>7.0f} < {1:>6.1f} | IBC = {2:>7.0f} < {3:>6.1f} | ICA = {4:>7.0f} < {5:>6.1f} |\n"
+        strIAB_BC_CA = "| IAB = {0:>7.0f} ∠ {1:>6.1f} | IBC = {2:>7.0f} ∠ {3:>6.1f} | ICA = {4:>7.0f} ∠ {5:>6.1f} |\n"
         iAB,iBC,iCA = Ms2ff @ i120
         resstr.append(strIAB_BC_CA.format(np.abs(iAB),r2d*np.angle(iAB),np.abs(iBC),r2d*np.angle(iBC),np.abs(iCA),r2d*np.angle(iCA)))
     resstr.append(str2)
