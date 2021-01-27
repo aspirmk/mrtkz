@@ -33,6 +33,9 @@ KZ1 = mrtkz.N(mdl,'KZ',q3,'A0')
 #KZ1 = mrtkz.N(mdl,'KZ',q3,'BC0')
 #KZ1 = mrtkz.N(mdl,'KZ',q3,'A0r',r=2.0)
 
+#  Проверка на вырожденность
+mdl.Test4Singularity()
+
 #Формирование разреженной СЛАУ и расчет электрических параметров
 mdl.Calc()
 
