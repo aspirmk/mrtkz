@@ -1,11 +1,24 @@
 # -*- coding: utf-8 -*-
 '''МОДУЛЬ РАСЧЕТА ТОКОВ КОРОТКОГО ЗАМЫКАНИЯ (М Р Т К З)
 
-Версия 3.13
+Версия 3.15
 
-г.Саратов 22.01.2021
+г.Саратов 27.01.2021
 
 История изменений
+27.01.2021
+- Рефакторинг кода, исключено применение промежуточного массива для суммирования
+  B/2 подключенных к узлу ветвей и собственной Y узла;
+- Реализован метод позволяющий выявить висящие, не связанные с землей узлы, ветви,
+  взаимоиндукции и несимметрии что в приводит к вырожденности (сингулярности)
+  формируемой СЛАУ, т.е. к невозможности решения СЛАУ.
+  Параллельные ветви с нулевым сопротивлением (ШСВ и  СВ), также приводят к
+  вырожденности, но данный метод не позволяет их выявить!,
+  для предотвращения вырожденности можно предложить использовать некоторое
+  сопротивление на СВ и ШСВ вместо 0, например 0.001 Ом.
+  mdl.Test4Singularity();
+- Выявлена и устранена логическая ошибка в условии вывода результатов токов
+  в проводимости узла.
 
 22.01.2021
 - С учетом реализации возможности ввода проводимости в узле скорректирован вывод
@@ -186,6 +199,21 @@ class Q:
         self.plist = []
         self.kn = None
 
+    def Test4Singularity(self):
+        if self.singulare:
+            self.singulare = False
+            for pk in self.plist:
+                if pk.q1 is pk.q2:
+                    pass
+                elif pk.q1 is self:
+                    if isinstance(pk.q2, Q):
+                        pk.q2.Test4Singularity()
+                elif pk.q2 is self:
+                    if isinstance(pk.q1, Q):
+                        pk.q1.Test4Singularity()
+
+
+
     def addp(self,kp):
         '''Служебный метод, предназачен для информирования узла о подключенных к нему ветвей'''
         self.plist.append(kp)
@@ -242,7 +270,7 @@ class Q:
         if parname=='':
             print('Узел № {} - {}'.format(self.id, self.name))
             print(StrU(u120))
-            if i120 != np.zeros(3):
+            if (i120 != np.zeros(3)).any():
                 print("Значения токов проводимости узла")
                 print(StrI(i120))
         else:
@@ -272,7 +300,7 @@ class Q:
         strres = []
         strres.append("Узел № {} - {}\n".format(self.id, self.name))
         strres.append(StrU(u120))
-        if i120 != np.zeros(3):
+        if (i120 != np.zeros(3)).any():
             strres.append("Значения токов проводимости узла")
             strres.append(StrI(i120))
         return ''.join(strres)
@@ -1184,24 +1212,70 @@ class Model:
         for kn in self.bn:
             kn.par()
 
+    def Test4Singularity(self):
+        '''Тестирование модели на условия приводящие к вырожденности
+        (сингулярности) матрицы уравнений узловых напряжений и токов ветвей
+        mdl.Test4Singularity()'''
+        for kq in self.bq:
+            kq.singulare = True
+        for kp in self.bp:
+            if isinstance(kp.q1, int) and isinstance(kp.q2, Q):
+                kp.q2.Test4Singularity()
+            elif isinstance(kp.q1, Q) and isinstance(kp.q2, int):
+                kp.q1.Test4Singularity()
+        listq = []
+        listp = []
+        for kq in self.bq:
+            if kq.singulare:
+                listq.append(kq)
+        for kp in self.bp:
+            if (kp.q1 in listq) or (kp.q2 in listq):
+                listp.append(kp)
+        if listq or listp:
+            print('\nСписок висящих узлов\n')
+            for kq in listq:
+                kq.par()
+            print('\nСписок висящих ветвей\n')
+            for kp in listp:
+                kp.par()
+            print('\nСписок взаимоиндукций между ветвями, хотя-бы одна из которых является висящей\n')
+            for km in self.bm:
+                if (km.p1 in listp) or (km.p2 in listp):
+                    km.par()
+            print('\nСписок КЗ на висящем узле или обрывов на висящих ветвях\n')
+            for kn in self.bn:
+                if isinstance(kn.qp, Q): # Короткие замыкания
+                    if kn.qp in listq:
+                        kn.par()
+                if isinstance(kn.qp, P): # Обрывы
+                    if kn.qp in listp:
+                        kn.par()
+            raise ValueError('Выявлены висящие узлы, ветви!!! \nВыполнение расчетов электрических параметров невозможно! \nУдалите или закоментируйте висящие узлы, ветви,\n, взаимоиндукции, КЗ и обрывы!')
+
 
     def Calc(self):
         '''Главный метод модуля МРТКЗ mdl.Calc()
-        Без использования списков, только массивы numpy
         Осуществляет формирование разреженной системы линейных алгебраических уравнений (СЛАУ)
         и последующее ее решение с помощью алгоритма библиотеки scipy - spsolve(LHS,RHS)
         LHS * X = RHS
         где LHS - разреженная квадратная матрица
             RHS - вектор столбец
             X - искомый результат расчета
+        Для каждого узла и ветви формируется по три уравнения:
+            для схемы прямой, обратной и нулевой последовательностей
+        Для каждой несимметрии формируется по три уравнения:
+            уравнения граничных условий, определяющих несимметрию
         Размерность (количество уравнений) равняется 3*(np+nq+nn), где:
             np - количество ветвей в расчетной модели;
             nq - количество узлов в расчетной модели;
             nn - количество несимметрий в расчетной модели.
-        Вышеуказанное уравнение представляет собой систему матричных уравнений без учета несимметрий:
+        Вышеуказанное уравнение представляет собой систему матричных уравнений
+        без учета уравнений описывающих несимметрии:
             Z*Ip + At*Uq = E
-            A*Ip + (-B/2)*Uq = 0
+            A*Ip + (-B/2)*Uq = -J
             где:
+                1-ое уравнение сформировано по 2-ому закону Кирхгофа (Zp*Ip - (Uq1 - Uq2) = Ep)
+                2-ое уравнение сформировано по 1-ому закону Кирхгофа (сумма токов в узле равна нулю)
                 Z - квадратная матрица сопротивлений ветвей и взаимных индуктивностей
                 прямой, обратной и нулевой последовательностей, размерность - (3*np,3*np)
                 A - матрица соединений, размерность - (3*nq,3*np)
@@ -1209,6 +1283,7 @@ class Model:
                 (B/2) - квадратная диагональная матрица сумм поперечных проводимостей B/2,
                 подключенных к узлу прямой, обратной и нулевой последовательностей, размерность - (3*nq,3*nq)
                 E - вектор столбец Э.Д.С. ветвей прямой, обратной и нулевой последовательностей, размерность - (3*np,1)
+                J - вектор столбец источников тока подключенных к узлам
                 Ip - искомый вектор столбец значений токов ветвей
                 прямой, обратной и нулевой последовательностей, размерность - (3*np,1)
                 Uq - искомый вектор столбец значений напряжений узлов
@@ -1262,17 +1337,19 @@ class Model:
         в которых хранятся значения ненулевых элеметнов матрицы, их номера строк и столбцов
         Этап 2. формируется CSC (Разреженный столбцовый формат) матрица LHS  с помощью метода scipy
         Решение разреженной СЛАУ осуществляется с помощью метода spsolve(LHS,RHS) библиотеки scipy'''
+        # self.Test4Singularity()
         n = 3*(self.nq+self.np+self.nn)# Размерность СЛАУ
         maxnnz = 3*self.nq + 15*self.np + 2*self.nm + 15*self.nn# Максимальное кол-во ненулевых элементов разреженной матрицы
-        RHS = np.zeros(n, dtype=np.complex)# Вектор правой части уравнения, в него записывается э.д.с. ветвей
-        qB = np.zeros(3*self.nq, dtype=np.complex)# Временный вектор для расчета сумм B/2 ветвей подключенных к узлу
+        RHS = np.zeros(n, dtype=np.complex)# Вектор правой части СЛАУ, в него записывается э.д.с. ветвей и J узлов
 
-        ij = 0 # Текущий адрес записи, в результате количество использованной памяти
+        ij = 3*self.nq # Текущий адрес записи, в результате количество использованной памяти
         cdata = np.zeros(maxnnz, dtype=np.cdouble)# Вектор для хранения ненулевых элементов СЛАУ
         ri = np.zeros(maxnnz, dtype=np.int)# Вектор для хранения номеров строк ненулевых элементов СЛАУ
         ci = np.zeros(maxnnz, dtype=np.int)# Вектор для хранения номеров столбцов ненулевых элементов СЛАУ
+        ri[0:ij] = 3*self.np + np.arange(ij)
+        ci[0:ij] = ri[0:ij]
 
-        for kp in self.bp:
+        for kp in self.bp: # Перебор всех ветвей
             pId = 3*(kp.id-1)#Здесь и далее номер строки, столбца относящегося к прямой последовательности ветви
             lpId = pId+arr012#[pId,pId+1,pId+2]
             #Запись сопротивлений ветви в разреженную матрицу
@@ -1296,7 +1373,7 @@ class Model:
                 lqId = qId+arr012#[qId,qId+1,qId+2]
                 qbId = 3*(kp.q1.id-1)
                 #Cуммирование B/2 подключенных ветвей к узлу
-                qB[qbId:qbId+3] += np.array(kp.B)/2
+                cdata[qbId:qbId+3] -= np.array(kp.B)/2
                 #Запись матриц соединений A и At в разреженную матрицу (для q1 -> -1)
                 Dij = 6
                 ri[ij:ij+Dij] = np.concatenate((lpId,lqId))#[pId,pId+1,pId+2,qId,qId+1,qId+2]
@@ -1309,7 +1386,7 @@ class Model:
                 lqId = qId+arr012#[qId,qId+1,qId+2]
                 qbId = 3*(kp.q2.id-1)
                 #Cуммирование B/2 подключенных ветвей к узлу
-                qB[qbId:qbId+3] += np.array(kp.B)/2
+                cdata[qbId:qbId+3] -= np.array(kp.B)/2
                 #Запись матриц соединений A и At в разреженную матрицу (для q2 -> 1 или Кт для трансформаторов)
                 Dij = 6
                 ri[ij:ij+Dij] = np.concatenate((lpId,lqId))#[pId,pId+1,pId+2,qId,qId+1,qId+2]
@@ -1317,7 +1394,7 @@ class Model:
                 cdata[ij:ij+Dij] = np.array([Kt2,Kt1,Kt0,Kt1,Kt2,Kt0])
                 ij += Dij
 
-        for km in self.bm:
+        for km in self.bm: # Перебор всех взаимоиндукций
             pId1 = 3*(km.p1.id-1)+2
             pId2 = 3*(km.p2.id-1)+2
             #Запись сопротивлений взаимоиндукции в разреженную матрицу
@@ -1327,24 +1404,18 @@ class Model:
             cdata[ij:ij+Dij] = np.array([km.M12,km.M21])
             ij += Dij
 
-        for kq in self.bq:
-            qId = 3*(self.np+kq.id-1)
-            lqId = qId+arr012#[qId,qId+1,qId+2]
+        for kq in self.bq:# Перебор всех узлов
+            qId = 3*(self.np + kq.id-1)
             qbId = 3*(kq.id-1)
-            #Запись сумм B/2 подключенных к узлу ветвей в разреженную матрицу
-            Dij = 3
-            ri[ij:ij+Dij] = lqId#[qId,qId+1,qId+2]
-            ci[ij:ij+Dij] = lqId#[qId,qId+1,qId+2]
-            cdata[ij:ij+Dij] = -(qB[qbId:qbId+3] + np.array(kq.Y))
+            cdata[qbId:qbId+3] -= np.array(kq.Y)
             RHS[qId:qId+3] = -np.array(kq.J)
-            ij += Dij
 
-        for kn in self.bn:
+        for kn in self.bn: # Перебор всех несимметрий
             nId = 3*(self.nq+self.np+kn.id-1)#Здесь и далее номер строки, столбца относящегося к несимметрии
             lnId = nId + arr012
             if isinstance(kn.qp, Q): # Короткие замыкания
                 qId = 3*(self.np+kn.qp.id-1)
-                lqId = qId+arr012
+                lqId = qId + arr012
                 #Запись в разреженную матрицу в уравнения по 1-ому закону Кирхгофа наличие КЗ в узле
                 Dij = 3
                 ri[ij:ij+Dij] = lqId#[qId,qId+1,qId+2]
@@ -1552,9 +1623,6 @@ mform3=dict({'' : lambda res,parname: res,
 
 
 def StrU(u120):
-    str0 =    "____________________________________________________________________________\n"
-    str1 =    "|                        |                        |                        |\n"
-    str2 =    "|________________________|________________________|________________________|"
     strUABC = "| UA  = {0:>7.0f} ∠ {1:>6.1f} | UB  = {2:>7.0f} ∠ {3:>6.1f} | UC  = {4:>7.0f} ∠ {5:>6.1f} |\n"
     strU120 = "| U1  = {0:>7.0f} ∠ {1:>6.1f} | U2  = {2:>7.0f} ∠ {3:>6.1f} | 3U0 = {4:>7.0f} ∠ {5:>6.1f} |\n"
     strUAB_BC_CA = "| UAB = {0:>7.0f} ∠ {1:>6.1f} | UBC = {2:>7.0f} ∠ {3:>6.1f} | UCA = {4:>7.0f} ∠ {5:>6.1f} |\n"
@@ -1562,30 +1630,21 @@ def StrU(u120):
     uA,uB,uC = Ms2f @ u120
     uAB,uBC,uCA = Ms2ff @ u120
     resstr = []
-    resstr.append(str0)
-    resstr.append(str1)
     resstr.append(strUABC.format(np.abs(uA),r2d*np.angle(uA),np.abs(uB),r2d*np.angle(uB),np.abs(uC),r2d*np.angle(uC)))
     resstr.append(strU120.format(np.abs(u1),r2d*np.angle(u1),np.abs(u2),r2d*np.angle(u2),np.abs(3*u0),r2d*np.angle(u0)))
     resstr.append(strUAB_BC_CA.format(np.abs(uAB),r2d*np.angle(uAB),np.abs(uBC),r2d*np.angle(uBC),np.abs(uCA),r2d*np.angle(uCA)))
-    resstr.append(str2)
     return ''.join(resstr)
 
 def StrI(i120, Iff=1):
-    str0 =    "____________________________________________________________________________\n"
-    str1 =    "|                        |                        |                        |\n"
-    str2 =    "|________________________|________________________|________________________|"
     strIABC = "| IA  = {0:>7.0f} ∠ {1:>6.1f} | IB  = {2:>7.0f} ∠ {3:>6.1f} | IC  = {4:>7.0f} ∠ {5:>6.1f} |\n"
     strI120 = "| I1  = {0:>7.0f} ∠ {1:>6.1f} | I2  = {2:>7.0f} ∠ {3:>6.1f} | 3I0 = {4:>7.0f} ∠ {5:>6.1f} |\n"
     i1,i2,i0 = i120
     iA,iB,iC = Ms2f @ i120
     resstr = []
-    resstr.append(str0)
-    resstr.append(str1)
     resstr.append(strIABC.format(np.abs(iA),r2d*np.angle(iA),np.abs(iB),r2d*np.angle(iB),np.abs(iC),r2d*np.angle(iC)))
     resstr.append(strI120.format(np.abs(i1),r2d*np.angle(i1),np.abs(i2),r2d*np.angle(i2),np.abs(3*i0),r2d*np.angle(i0)))
     if Iff:
         strIAB_BC_CA = "| IAB = {0:>7.0f} ∠ {1:>6.1f} | IBC = {2:>7.0f} ∠ {3:>6.1f} | ICA = {4:>7.0f} ∠ {5:>6.1f} |\n"
         iAB,iBC,iCA = Ms2ff @ i120
         resstr.append(strIAB_BC_CA.format(np.abs(iAB),r2d*np.angle(iAB),np.abs(iBC),r2d*np.angle(iBC),np.abs(iCA),r2d*np.angle(iCA)))
-    resstr.append(str2)
     return ''.join(resstr)
